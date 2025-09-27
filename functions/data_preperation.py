@@ -3,6 +3,8 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from typing import List, Tuple, Union
 import numpy as np
+import tensorflow as tf
+
 
 
 def download_stock_data(tickers, years=5):
@@ -239,3 +241,62 @@ def two_qubit_data_tickers(tickers):
     return X_train, X_test, y_train, y_test
 
 
+def normalize_features(df, method="minmax"):
+    """
+    Normalize numerical features in a DataFrame.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The DataFrame containing features to normalize.
+    method : str, optional
+        The normalization method. Options:
+        - "minmax": scales values to [0, 1]
+        - "zscore": standardization (mean=0, std=1)
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with normalized numerical features.
+    """
+    df_norm = df.copy()
+
+    numeric_cols = df_norm.select_dtypes(include=["number"]).columns
+
+    if method == "minmax":
+        df_norm[numeric_cols] = (
+            df_norm[numeric_cols] - df_norm[numeric_cols].min()
+        ) / (df_norm[numeric_cols].max() - df_norm[numeric_cols].min())
+
+    elif method == "zscore":
+        df_norm[numeric_cols] = (
+            df_norm[numeric_cols] - df_norm[numeric_cols].mean()
+        ) / df_norm[numeric_cols].std(ddof=0)
+
+    else:
+        raise ValueError("method must be either 'minmax' or 'zscore'")
+
+    return df_norm
+
+# TODO make it work for other tickers
+def process_model_data(targets, features, ticker):
+    #just 1 ticker for now
+    X_train, X_test, y_train, y_test= two_qubit_data_tickers([ticker])
+
+    #drop ticker name
+    X_train.columns = X_train.columns.droplevel("Ticker")
+    y_train.columns = y_train.columns.droplevel("Ticker")
+
+    X = X_train.reset_index()
+    y = y_train.reset_index()
+
+    X = X[features]
+    y = y[targets]
+
+    # TODO normalise all data together
+    X = normalize_features(X, method="minmax")
+
+    X = X.to_numpy().astype(float).tolist()
+    X= np.array(X)
+    y = tf.convert_to_tensor(y.values, dtype=tf.float32)
+    return X,y

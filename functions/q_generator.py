@@ -1,6 +1,8 @@
 import qiskit
 from qiskit import QuantumCircuit
-from qiskit.circuit.library import Parameter
+#from qiskit.circuit.library import Parameter
+from qiskit.circuit import ParameterVector
+from qiskit.circuit import Parameter
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.circuit.library import EfficientSU2
 from qiskit.primitives import BaseEstimatorV2
@@ -43,13 +45,14 @@ def data_loading_layer(num_data_points, tickers):
             size,
             entanglement='circular', # can be changed to linear if needed
             reps=1,
-            insert_barriers=True,
+            insert_barriers=False, 
             parameter_prefix=ticker
         )
         qc.append(su2_block, qubit_indices)
         start += size
-
+    qc = qc.decompose(reps=10)
     return qc
+
 
 def custom_parameterized_circuit(num_data_points, tickers,
                                  rotations=['rx', 'ry', 'rz'],
@@ -67,6 +70,10 @@ def custom_parameterized_circuit(num_data_points, tickers,
     total_qubits = sum(group_sizes)
     qc = QuantumCircuit(total_qubits)
 
+    num_rotations = total_qubits * len(rotations) * reps * 2  # 2 = 'a' and 'b' layers
+
+    weights = ParameterVector("weights", num_rotations)
+
     # Assign qubit indices per ticker
     start = 0
     block_indices = []
@@ -75,25 +82,30 @@ def custom_parameterized_circuit(num_data_points, tickers,
         start += size
 
     # Helper to apply selected rotations
-    def apply_rotations(qc, ticker, qubit, suffix):
+    def apply_rotations(qc, qubit_idx):
+        nonlocal weight_counter
         for rot in rotations:
             rot_lower = rot.lower()
+            theta = weights[weight_counter]  # take the next element from the vector
+            weight_counter += 1
             if rot_lower == 'rx':
-                qc.rx(Parameter(f"{ticker}_rx{suffix}_q{qubit}"), qubit)
+                qc.rx(theta, qubit_idx)
             elif rot_lower == 'ry':
-                qc.ry(Parameter(f"{ticker}_ry{suffix}_q{qubit}"), qubit)
+                qc.ry(theta, qubit_idx)
             elif rot_lower == 'rz':
-                qc.rz(Parameter(f"{ticker}_rz{suffix}_q{qubit}"), qubit)
+                qc.rz(theta, qubit_idx)
             else:
                 raise ValueError("Rotation must be one of ['rx','ry','rz']")
 
     # ---- REPEATED LAYERS ----
+    weight_counter = 0
+
     for rep in range(reps):
 
         # --- Rotations ---
         for ticker, qubits in zip(tickers, block_indices):
             for q in qubits:
-                apply_rotations(qc, ticker, q, suffix=f"{rep}_a")
+                apply_rotations(qc, q)
 
         # --- Inter-block entanglement ---
         for i in range(len(block_indices)):
@@ -120,7 +132,7 @@ def custom_parameterized_circuit(num_data_points, tickers,
 
                 # Second set of rotations
                 for q in qubits:
-                    apply_rotations(qc, ticker, q, suffix=f"{rep}_b")
+                    apply_rotations(qc, q)
 
     return qc
 
