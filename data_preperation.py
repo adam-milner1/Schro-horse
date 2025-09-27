@@ -11,6 +11,29 @@ def download_stock_data(tickers, years=5):
     data = yf.download(tickers, start=start_date, end=end_date)
     return data
 
+def add_OC_CO_next_changes(data: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """
+    Adds two predictive target features for a given ticker:
+    - OC_next: Next day's Open to Close change.
+    - CO_next: Today's Close to Next day's Open change.
+    """
+
+    open_ = data["Open"][ticker]
+    close_ = data["Close"][ticker]
+
+    # Next day Open / Close
+    open_next = open_.shift(-1)
+    close_next = close_.shift(-1)
+
+    # OC_next: next day's Open -> Close change
+    data[("OC_next", ticker)] = close_next - open_next
+
+    # CO_next: today's Close -> next day's Open
+    data[("CO_next", ticker)] = open_next - close_
+
+    return data
+
+
 def add_sma(data: pd.DataFrame, ticker: str, window: int) -> pd.DataFrame:
     """Add Simple Moving Average (SMA) for a given ticker and window."""
     data[(f"SMA_{window}", ticker)] = (
@@ -93,13 +116,13 @@ def add_all_indicators(data: pd.DataFrame, tickers: list) -> pd.DataFrame:
         # RSI
         data = add_rsi(data, t, 14)
         # ATR
-        add_atr(data, t, 14)
+        data = add_atr(data, t, 14)
         # Change
         data = add_change(data, t)
         # Change %
         data = add_change_pct(data, t)
         # Sort columns
-        data = data.sort_index(axis=1, level=0)
+    data = data.sort_index(axis=1, level=0)
     return data
 
 def normalise_data(
@@ -193,3 +216,26 @@ def split_time_series(
     y_train, y_test = y.iloc[:split_index], y.iloc[split_index:]
 
     return X_train, X_test, y_train, y_test
+
+
+def two_qubit_data_tickers(tickers):
+    data = download_stock_data(tickers)
+    for t in tickers:
+        data = add_macd(data, t)
+
+
+        data = add_OC_CO_next_changes(data, t)
+
+        data = add_ema(data, t, 20)
+
+    
+    data.sort_index(axis=1, level=0)
+    data = remove_na(data)
+
+
+    X_train, X_test, y_train, y_test = split_time_series(data, target_cols=["OC_next", "CO_next"])
+
+    
+    return X_train, X_test, y_train, y_test
+
+
