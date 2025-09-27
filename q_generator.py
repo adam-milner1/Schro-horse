@@ -53,26 +53,8 @@ def data_loading_layer(num_data_points, tickers):
 
 def custom_parameterized_circuit(num_data_points, tickers,
                                  rotations=['rx', 'ry', 'rz'],
-                                 inter_gate='cz', intra_gate='cz'):
-    """
-    Builds a fully parameterized circuit per ticker with configurable rotations and entanglement.
+                                 inter_gate='cz', intra_gate='cz', reps=2):
 
-    Parameters:
-        num_data_points : int
-            Number of data points per ticker (controls qubit allocation).
-        tickers : list[str]
-            List of ticker symbols.
-        rotations : list[str]
-            List of single-qubit rotations to apply per qubit, e.g., ['rx','ry','rz'].
-        inter_gate : str
-            Gate type for cross-block entanglement ('cz' or 'cx').
-        intra_gate : str
-            Gate type for intra-block entanglement ('cz' or 'cx').
-
-    Returns:
-        QuantumCircuit
-            A new parameterized quantum circuit.
-    """
     num_stocks = len(tickers)
 
     # Determine qubits per ticker
@@ -105,41 +87,43 @@ def custom_parameterized_circuit(num_data_points, tickers,
             else:
                 raise ValueError("Rotation must be one of ['rx','ry','rz']")
 
-    # --- Initial rotations ---
-    for ticker, qubits in zip(tickers, block_indices):
-        for q in qubits:
-            apply_rotations(qc, ticker, q, suffix=0)
+    # ---- REPEATED LAYERS ----
+    for rep in range(reps):
 
-    # --- Inter-block entanglement ---
-    for i in range(len(block_indices)):
-        current_block = block_indices[i]
-        next_block = block_indices[(i + 1) % num_stocks]
-        q1 = current_block[-1]
-        q2 = next_block[0]
-        if inter_gate.lower() == 'cz':
-            qc.cz(q1, q2)
-        elif inter_gate.lower() == 'cx':
-            qc.cx(q1, q2)
-        else:
-            raise ValueError("inter_gate must be 'cz' or 'cx'")
-
-    # --- Intra-block entanglement + second rotation set ---
-    for ticker, qubits in zip(tickers, block_indices):
-        if len(qubits) > 1:
-            # Intra-block entanglement
-            for i in range(len(qubits)-1):
-                q1 = qubits[i]
-                q2 = qubits[i+1]
-                if intra_gate.lower() == 'cz':
-                    qc.cz(q1, q2)
-                elif intra_gate.lower() == 'cx':
-                    qc.cx(q1, q2)
-
-            # Second set of rotations
+        # --- Rotations ---
+        for ticker, qubits in zip(tickers, block_indices):
             for q in qubits:
-                apply_rotations(qc, ticker, q, suffix=1)
+                apply_rotations(qc, ticker, q, suffix=f"{rep}_a")
+
+        # --- Inter-block entanglement ---
+        for i in range(len(block_indices)):
+            current_block = block_indices[i]
+            next_block = block_indices[(i + 1) % num_stocks]
+            q1 = current_block[-1]
+            q2 = next_block[0]
+            if inter_gate.lower() == 'cz':
+                qc.cz(q1, q2)
+            elif inter_gate.lower() == 'cx':
+                qc.cx(q1, q2)
+
+        # --- Intra-block entanglement + second rotations ---
+        for ticker, qubits in zip(tickers, block_indices):
+            if len(qubits) > 1:
+                # Intra-block entanglement
+                for i in range(len(qubits)-1):
+                    q1 = qubits[i]
+                    q2 = qubits[i+1]
+                    if intra_gate.lower() == 'cz':
+                        qc.cz(q1, q2)
+                    elif intra_gate.lower() == 'cx':
+                        qc.cx(q1, q2)
+
+                # Second set of rotations
+                for q in qubits:
+                    apply_rotations(qc, ticker, q, suffix=f"{rep}_b")
 
     return qc
+
 
 
 def alternate_parameterised_circuit(num_data_points, tickers):
@@ -243,3 +227,23 @@ def split_parameters(params):
             input_params.append(p)
     
     return input_params, weight_params
+
+
+def two_qubit_circuit_tickers(tickers):
+    """
+    Creates a quantum circuit with 2 qubits per ticker.
+    """
+    num_stocks = len(tickers)
+    total_qubits = num_stocks * 2
+    qc = QuantumCircuit(total_qubits)
+    data_points = 8
+    group_sizes = num_stocks * [2]
+    qc.compose(data_loading_layer(data_points, tickers), inplace=True)
+    qc.compose(custom_parameterized_circuit(data_points, tickers,
+                                           rotations=['rx', 'ry', 'rz'],
+                                           inter_gate='cz',
+                                           intra_gate='cz', reps=2), inplace=True)
+    # Assign qubit indices per ticker
+
+    return qc
+            
