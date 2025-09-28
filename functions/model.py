@@ -276,17 +276,9 @@ class GAN(models.Model):
             callbacks = []
 
         for epoch in range(epochs):
-            # Shuffle indices- change this?
-            # indices = np.arange(num_samples)
-            # np.random.shuffle(indices)
-            # feature_data_shuffled = feature_data[indices]
-            # real_data_shuffled = real_data[indices]
 
             # Reset batch size after last batch smaller
             self.batch_size= batch_size
-
-            for cb in callbacks:
-                cb.on_epoch_begin(epoch)
 
 
             epoch_metrics = {m.name: 0.0 for m in self.metrics}
@@ -301,10 +293,6 @@ class GAN(models.Model):
                 # Update batch size in GAN if last batch is smaller
                 self.batch_size = feature_batch.shape[0]
 
-                # Call on_batch_begin for callbacks
-                for cb in callbacks:
-                    cb.on_batch_begin(step)
-
                 # Perform a single train step for this batch
                 batch_metrics = self.train_step(feature_batch, real_batch)
 
@@ -312,15 +300,13 @@ class GAN(models.Model):
                 for key, value in batch_metrics.items():
                     epoch_metrics[key] += value
 
-                # Call on_batch_end for callbacks
-                for cb in callbacks:
-                    cb.on_batch_end(step, logs=batch_metrics)
-
             # Average metrics over steps
             epoch_metrics = {k: v / steps_per_epoch for k, v in epoch_metrics.items()}
 
             if verbose:
                 print(f"Epoch {epoch + 1}/{epochs} - {epoch_metrics}")
+            
+
             
              # Call on_epoch_end for callbacks
             for cb in callbacks:
@@ -342,3 +328,5 @@ class GAN(models.Model):
         weights_list = [w.numpy() for w in self.generator_weights]
         np.save(path, weights_list)
         print(f"Generator weights saved to {path}")
+
+
