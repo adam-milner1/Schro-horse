@@ -132,6 +132,7 @@ class GAN(models.Model):
                 n_features, #number of features per ticker
                 n_outputs, #number of outputs per ticker
                 generator_qiskit,
+                discriminator_layer_multiplier =1,
                 generator_device = "default.qubit",
                 on_hardware = False,
                 batch_size = 64, #what should we be using as batch size?,
@@ -158,7 +159,8 @@ class GAN(models.Model):
         self.generator = QGenerator(generator_qiskit, batch_size, generator_device, on_hardware)
 
         #initialise discriminator
-        self.discriminator = discriminator(self.num_qubits)
+        #inputs is num generator inputs +num generatout outputs
+        self.discriminator = discriminator(self.latent_dim+self.num_qubits, multiplier = discriminator_layer_multiplier)
 
         #initialise starting weights for generator
         num_generator_params = generator_qiskit.num_parameters - (n_features * n_tickers) #subtracting the number of feature inputs as these are not trainable weights
@@ -220,12 +222,19 @@ class GAN(models.Model):
         weights_2d = tf.expand_dims(self.generator_weights, 0) 
         weights_tiled = tf.tile(weights_2d, [self.batch_size, 1])
 
+        #move this out of the train step if it works
+        real_data = tf.concat([feature_data, real_data], axis = -1)
+
         #update discriminator a few times
         for i in range(self.discriminator_steps):
 
             with tf.GradientTape() as tape:
                 # Input features to the generator
                 generated_data = self.generator(feature_data, weights_tiled)
+
+                #append generated data to the inputs
+                generated_data = tf.concat([feature_data, generated_data], axis = -1)
+
                 generated_predictions = self.discriminator(generated_data, training = True)
                 real_predictions = self.discriminator(real_data, training = True)
 
@@ -243,6 +252,8 @@ class GAN(models.Model):
             weights_tiled = tf.tile(weights_2d, [self.batch_size, 1])
 
             generated_data = self.generator(feature_data, weights_tiled)
+            #concat feature vector
+            generated_data = tf.concat([feature_data, generated_data], axis = -1)
             generated_predictions = self.discriminator(generated_data, training = True)
             g_loss = -tf.reduce_mean(generated_predictions)
           

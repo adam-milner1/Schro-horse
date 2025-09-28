@@ -14,7 +14,7 @@ import os
 import json
 import matplotlib.pyplot as plt
 
-def plot_training_metrics(save_dir):
+def plot_training_metrics(save_dir, generator_loss_scaling =1):
     """
     Reads JSON metric files saved after each epoch and plots them.
     
@@ -45,7 +45,13 @@ def plot_training_metrics(save_dir):
     # Plot each metric
     plt.figure(figsize=(10, 6))
     for key, values in all_metrics.items():
-        plt.plot(epochs, values, label=key)
+        if key in ["d_loss", "g_loss"]:
+            if key == "g_loss":
+                values = [v * generator_loss_scaling for v in values]
+            
+                plt.plot(epochs, values, label=f"{key}*{generator_loss_scaling}")
+            else:
+                plt.plot(epochs, values, label=key)
 
     plt.xlabel("Epoch")
     plt.ylabel("Metric Value")
