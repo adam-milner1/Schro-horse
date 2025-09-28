@@ -5,6 +5,9 @@ from typing import List, Tuple, Union
 import numpy as np
 import tensorflow as tf
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 
 
 def download_stock_data(tickers, years=5):
@@ -340,3 +343,28 @@ def process_model_data(targets, features, tickers):
 
     print(X_np.shape, y_tf.shape)
     return X_np, y_tf
+
+def plot_tickers_pct_change_corr(data: pd.DataFrame, tickers: list, title="Ticker % Change Correlation"):
+    """
+    Plot correlation heatmap of percentage change for multiple tickers.
+
+    Args:
+        data (pd.DataFrame): Multi-index DataFrame with tickers as top-level columns.
+        tickers (list): List of tickers to include.
+        title (str): Heatmap title.
+    """
+    # Extract "% Change" columns for all tickers
+    pct_change_cols = [(f"OC_next", t) for t in tickers]
+    df_pct = data[pct_change_cols].copy()
+
+    # Flatten columns for convenience
+    df_pct.columns = [t for _, t in df_pct.columns]
+
+    # Compute correlation
+    corr = df_pct.corr()
+
+    # Plot
+    plt.figure(figsize=(20,12))
+    sns.heatmap(corr, annot=True, fmt=".2f", cmap='coolwarm', square=True)
+    plt.title(title)
+    plt.show()
