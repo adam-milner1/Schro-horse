@@ -26,7 +26,7 @@ Research papers
 from Jayden:
 I think the model may be working now but I haven't got a way to test it yet so it could be not updating the weights or something idk- will investigate tomorrow.
 
-Currently it only works with 1 ticker- also aiming to fix tomorrow.
+Currently it only works with 1 ticker
 
 Tomorrow morning i'll make some bits to load the data and params back into the qiskit circuit so everyone can use it.
 

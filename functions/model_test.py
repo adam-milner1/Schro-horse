@@ -2,40 +2,61 @@ import os
 from tensorflow.python.summary.summary_iterator import summary_iterator
 import struct
 
-def load_metrics(model_directory):
-    event_file = os.listdir(f"{model_directory}/logs/train")[0]
-    event_file = f"{model_directory}/logs/train/{event_file}"
-
-    g_loss=[]
-    d_loss =[]
-    d_gp=[]
-    d_w_loss=[]
-    steps=[]
-    real_score = []
-    gen_score = []
-    for e in summary_iterator(event_file):    
-        for v in e.summary.value:
-            if v.tag == 'epoch_g_loss':            
-                g_loss.append(struct.unpack('f', v.tensor.tensor_content)[0])
-            
-            elif v.tag == 'epoch_d_loss':            
-                d_loss.append(struct.unpack('f', v.tensor.tensor_content)[0])
-            
-            elif v.tag == 'epoch_d_gp':            
-                d_gp.append(struct.unpack('f', v.tensor.tensor_content)[0])
-
-            elif v.tag == 'epoch_d_wass_loss':            
-                d_w_loss.append(struct.unpack('f', v.tensor.tensor_content)[0])
-
-            elif v.tag == 'epoch_real_socre':            
-                real_score.append(struct.unpack('f', v.tensor.tensor_content)[0])
-            
-            elif v.tag == 'epoch_gen_score':            
-                gen_score.append(struct.unpack('f', v.tensor.tensor_content)[0])
-        return {"g_loss": g_loss, "d_loss": d_loss, "d_gp": d_gp, "d_w_loss": d_w_loss, "real_score": real_score, "gen_score": gen_score}
 
 def get_latest_model_path(model_dir):
     files = os.listdir(model_dir)
     paths = [os.path.join(model_dir, basename) for basename in files]
     return max(paths, key=os.path.getctime)
+
+
+
+import os
+import json
+import matplotlib.pyplot as plt
+
+def plot_training_metrics(save_dir, generator_loss_scaling =1):
+    """
+    Reads JSON metric files saved after each epoch and plots them.
+    
+    Parameters
+    ----------
+    save_dir : str
+        Directory containing the metrics JSON files.
+    """
+    # Collect all metric files
+    metric_files = sorted([f for f in os.listdir(save_dir) if f.startswith("metrics_epoch") and f.endswith(".json")])
+    if not metric_files:
+        print(f"No metric files found in {save_dir}")
+        return
+
+    # Aggregate metrics
+    all_metrics = {}
+    epochs = []
+
+    for file in metric_files:
+        epoch_num = int(file.split("epoch")[1].split(".")[0])
+        epochs.append(epoch_num)
+        path = os.path.join(save_dir, file)
+        with open(path, "r") as f:
+            metrics = json.load(f)
+        for key, value in metrics.items():
+            all_metrics.setdefault(key, []).append(value)
+
+    # Plot each metric
+    plt.figure(figsize=(10, 6))
+    for key, values in all_metrics.items():
+        if key in ["d_loss", "g_loss"]:
+            if key == "g_loss":
+                values = [v * generator_loss_scaling for v in values]
+            
+                plt.plot(epochs, values, label=f"{key}*{generator_loss_scaling}")
+            else:
+                plt.plot(epochs, values, label=key)
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Metric Value")
+    plt.title("Training Metrics Over Epochs")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 

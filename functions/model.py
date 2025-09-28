@@ -132,6 +132,7 @@ class GAN(models.Model):
                 n_features, #number of features per ticker
                 n_outputs, #number of outputs per ticker
                 generator_qiskit,
+                discriminator_layer_multiplier =1,
                 generator_device = "default.qubit",
                 on_hardware = False,
                 batch_size = 64, #what should we be using as batch size?,
@@ -158,7 +159,8 @@ class GAN(models.Model):
         self.generator = QGenerator(generator_qiskit, batch_size, generator_device, on_hardware)
 
         #initialise discriminator
-        self.discriminator = discriminator(self.num_qubits)
+        #inputs is num generator inputs +num generatout outputs
+        self.discriminator = discriminator(self.latent_dim+self.num_qubits, multiplier = discriminator_layer_multiplier)
 
         #initialise starting weights for generator
         num_generator_params = generator_qiskit.num_parameters - (n_features * n_tickers) #subtracting the number of feature inputs as these are not trainable weights
@@ -220,12 +222,19 @@ class GAN(models.Model):
         weights_2d = tf.expand_dims(self.generator_weights, 0) 
         weights_tiled = tf.tile(weights_2d, [self.batch_size, 1])
 
+        #move this out of the train step if it works
+        real_data = tf.concat([feature_data, real_data], axis = -1)
+
         #update discriminator a few times
         for i in range(self.discriminator_steps):
 
             with tf.GradientTape() as tape:
                 # Input features to the generator
                 generated_data = self.generator(feature_data, weights_tiled)
+
+                #append generated data to the inputs
+                generated_data = tf.concat([feature_data, generated_data], axis = -1)
+
                 generated_predictions = self.discriminator(generated_data, training = True)
                 real_predictions = self.discriminator(real_data, training = True)
 
@@ -243,6 +252,8 @@ class GAN(models.Model):
             weights_tiled = tf.tile(weights_2d, [self.batch_size, 1])
 
             generated_data = self.generator(feature_data, weights_tiled)
+            #concat feature vector
+            generated_data = tf.concat([feature_data, generated_data], axis = -1)
             generated_predictions = self.discriminator(generated_data, training = True)
             g_loss = -tf.reduce_mean(generated_predictions)
           
@@ -276,17 +287,9 @@ class GAN(models.Model):
             callbacks = []
 
         for epoch in range(epochs):
-            # Shuffle indices- change this?
-            # indices = np.arange(num_samples)
-            # np.random.shuffle(indices)
-            # feature_data_shuffled = feature_data[indices]
-            # real_data_shuffled = real_data[indices]
 
             # Reset batch size after last batch smaller
             self.batch_size= batch_size
-
-            for cb in callbacks:
-                cb.on_epoch_begin(epoch)
 
 
             epoch_metrics = {m.name: 0.0 for m in self.metrics}
@@ -301,10 +304,6 @@ class GAN(models.Model):
                 # Update batch size in GAN if last batch is smaller
                 self.batch_size = feature_batch.shape[0]
 
-                # Call on_batch_begin for callbacks
-                for cb in callbacks:
-                    cb.on_batch_begin(step)
-
                 # Perform a single train step for this batch
                 batch_metrics = self.train_step(feature_batch, real_batch)
 
@@ -312,15 +311,13 @@ class GAN(models.Model):
                 for key, value in batch_metrics.items():
                     epoch_metrics[key] += value
 
-                # Call on_batch_end for callbacks
-                for cb in callbacks:
-                    cb.on_batch_end(step, logs=batch_metrics)
-
             # Average metrics over steps
             epoch_metrics = {k: v / steps_per_epoch for k, v in epoch_metrics.items()}
 
             if verbose:
                 print(f"Epoch {epoch + 1}/{epochs} - {epoch_metrics}")
+            
+
             
              # Call on_epoch_end for callbacks
             for cb in callbacks:
@@ -342,3 +339,5 @@ class GAN(models.Model):
         weights_list = [w.numpy() for w in self.generator_weights]
         np.save(path, weights_list)
         print(f"Generator weights saved to {path}")
+
+

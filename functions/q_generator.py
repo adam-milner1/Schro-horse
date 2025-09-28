@@ -6,23 +6,17 @@ from qiskit.circuit import Parameter
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.circuit.library import EfficientSU2
 from qiskit.primitives import BaseEstimatorV2
+from qiskit import transpile
+
 from qiskit.quantum_info.operators.base_operator import BaseOperator
 
 import numpy as np
 
+
 def data_loading_layer(num_data_points, tickers):
     """
-    Creates a new QuantumCircuit with EfficientSU2 blocks for each ticker.
-
-    Parameters:
-        num_data_points : int
-            Number of data points (controls block size).
-        tickers : list[str]
-            List of ticker symbols (used as parameter prefixes).
-
-    Returns:
-        QuantumCircuit
-            A new quantum circuit with appended EfficientSU2 blocks.
+    Creates EfficientSU2 blocks for each ticker, but renames
+    the data parameters to x0, x1, x2 ... sequentially across tickers.
     """
     num_stocks = len(tickers)
 
@@ -33,29 +27,42 @@ def data_loading_layer(num_data_points, tickers):
         group_size = int(np.ceil(num_data_points / 4))
         group_sizes = num_stocks * [group_size]
 
-    # Total number of qubits needed
     total_qubits = sum(group_sizes)
     qc = QuantumCircuit(total_qubits)
 
-    # Add EfficientSU2 blocks
     start = 0
+    global_param_idx = 0
+
     for ticker, size in zip(tickers, group_sizes):
-        qubit_indices = list(range(start, start + size))
+        qubits = list(range(start, start + size))
+
+        # Create SU2 block
         su2_block = EfficientSU2(
-            size,
-            entanglement='circular', # can be changed to linear if needed
+            num_qubits=size,
+            entanglement='circular',
             reps=1,
-            insert_barriers=False, 
-            parameter_prefix=ticker
+            insert_barriers=False,
+            parameter_prefix=ticker  # we will rename parameters next
         )
-        qc.append(su2_block, qubit_indices)
+
+        # Rename parameters sequentially
+        param_map = {}
+        for old_param in su2_block.parameters:
+            param_map[old_param] = Parameter(f"x{global_param_idx}")
+            global_param_idx += 1
+
+        su2_block = su2_block.assign_parameters(param_map, inplace=False)
+
+        qc.append(su2_block, qubits)
         start += size
-    qc = qc.decompose(reps=10)
+
     return qc
 
 
+
+
 def custom_parameterized_circuit(num_data_points, tickers,
-                                 rotations=['rx', 'ry', 'rz'],
+                                 rotations=['rx','ry','rz'],
                                  inter_gate='cz', intra_gate='cz', reps=2):
 
     num_stocks = len(tickers)
@@ -70,67 +77,53 @@ def custom_parameterized_circuit(num_data_points, tickers,
     total_qubits = sum(group_sizes)
     qc = QuantumCircuit(total_qubits)
 
-    num_rotations = total_qubits * len(rotations) * reps * 2  # 2 = 'a' and 'b' layers
-
-    weights = ParameterVector("weights", num_rotations)
+    # Total weight parameters: num_qubits * len(rotations) * reps * 2
+    num_rotations = total_qubits * len(rotations) * reps * 2
+    weights = ParameterVector("w", num_rotations)  # Named as weights explicitly
 
     # Assign qubit indices per ticker
     start = 0
     block_indices = []
     for size in group_sizes:
-        block_indices.append(list(range(start, start + size)))
+        block_indices.append(list(range(start, start+size)))
         start += size
 
-    # Helper to apply selected rotations
+    # Helper
+    weight_counter = 0
     def apply_rotations(qc, qubit_idx):
         nonlocal weight_counter
         for rot in rotations:
-            rot_lower = rot.lower()
-            theta = weights[weight_counter]  # take the next element from the vector
+            theta = weights[weight_counter]
             weight_counter += 1
-            if rot_lower == 'rx':
+            if rot.lower() == 'rx':
                 qc.rx(theta, qubit_idx)
-            elif rot_lower == 'ry':
+            elif rot.lower() == 'ry':
                 qc.ry(theta, qubit_idx)
-            elif rot_lower == 'rz':
+            elif rot.lower() == 'rz':
                 qc.rz(theta, qubit_idx)
-            else:
-                raise ValueError("Rotation must be one of ['rx','ry','rz']")
 
-    # ---- REPEATED LAYERS ----
-    weight_counter = 0
-
+    # Repeat layers
     for rep in range(reps):
-
-        # --- Rotations ---
-        for ticker, qubits in zip(tickers, block_indices):
+        for qubits in block_indices:
             for q in qubits:
                 apply_rotations(qc, q)
-
-        # --- Inter-block entanglement ---
+        # inter-block entanglement
         for i in range(len(block_indices)):
-            current_block = block_indices[i]
-            next_block = block_indices[(i + 1) % num_stocks]
-            q1 = current_block[-1]
-            q2 = next_block[0]
-            if inter_gate.lower() == 'cz':
-                qc.cz(q1, q2)
-            elif inter_gate.lower() == 'cx':
-                qc.cx(q1, q2)
-
-        # --- Intra-block entanglement + second rotations ---
-        for ticker, qubits in zip(tickers, block_indices):
-            if len(qubits) > 1:
-                # Intra-block entanglement
+            q1 = block_indices[i][-1]
+            q2 = block_indices[(i+1) % num_stocks][0]
+            if inter_gate.lower()=='cz':
+                qc.cz(q1,q2)
+            elif inter_gate.lower()=='cx':
+                qc.cx(q1,q2)
+        # intra-block entanglement + second rotations
+        for qubits in block_indices:
+            if len(qubits)>1:
                 for i in range(len(qubits)-1):
-                    q1 = qubits[i]
-                    q2 = qubits[i+1]
-                    if intra_gate.lower() == 'cz':
-                        qc.cz(q1, q2)
-                    elif intra_gate.lower() == 'cx':
-                        qc.cx(q1, q2)
-
-                # Second set of rotations
+                    q1, q2 = qubits[i], qubits[i+1]
+                    if intra_gate.lower()=='cz':
+                        qc.cz(q1,q2)
+                    elif intra_gate.lower()=='cx':
+                        qc.cx(q1,q2)
                 for q in qubits:
                     apply_rotations(qc, q)
 
@@ -138,8 +131,37 @@ def custom_parameterized_circuit(num_data_points, tickers,
 
 
 
-def alternate_parameterised_circuit(num_data_points, tickers):
-    pass
+
+def big_su2_circuit(total_qubits, reps=1, entanglement='linear'):
+    """
+    Build a single big EfficientSU2 circuit over all qubits.
+
+    Args:
+        total_qubits (int): total number of qubits in the circuit
+        reps (int): number of repetitions of the SU2 layers
+        entanglement (str): type of entanglement ('linear' or 'circular')
+
+    Returns:
+        QuantumCircuit: parameterized SU2 circuit
+    """
+    qc = QuantumCircuit(total_qubits)
+
+    # Create single big EfficientSU2
+    su2_block = EfficientSU2(
+        num_qubits=total_qubits,
+        entanglement=entanglement,
+        reps=reps,
+        insert_barriers=False
+    )
+
+    # Rename parameters sequentially as W0, W1, ...
+    param_map = {old: Parameter(f"W{i}") for i, old in enumerate(su2_block.parameters)}
+    su2_block = su2_block.assign_parameters(param_map, inplace=False)
+
+    # Append the SU2 to the main circuit
+    qc.append(su2_block, range(total_qubits))
+
+    return qc
 
 def observables(num_qubits):
     """
@@ -251,11 +273,13 @@ def two_qubit_circuit_tickers(tickers):
     data_points = 8
     group_sizes = num_stocks * [2]
     qc.compose(data_loading_layer(data_points, tickers), inplace=True)
-    qc.compose(custom_parameterized_circuit(data_points, tickers,
-                                           rotations=['rx', 'ry', 'rz'],
-                                           inter_gate='cz',
-                                           intra_gate='cz', reps=2), inplace=True)
+    qc.compose(big_su2_circuit(total_qubits, reps=1), inplace=True)
+    #qc.compose(custom_parameterized_circuit(data_points, tickers,
+    #                                       rotations=['rx', 'ry', 'rz'],
+    #                                       inter_gate='cz',
+    #                                       intra_gate='cz', reps=1), inplace=True)
     # Assign qubit indices per ticker
-
+    qc.measure_all()
+    
     return qc
             
