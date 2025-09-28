@@ -233,13 +233,28 @@ def two_qubit_data_tickers(tickers):
     
     data.sort_index(axis=1, level=0)
     data = remove_na(data)
-
-
+    data = normalize_to_pm_pi(data)
     X_train, X_test, y_train, y_test = split_time_series(data, target_cols=["OC_next", "CO_next"])
 
     
     return X_train, X_test, y_train, y_test
 
+def normalize_to_pm_pi(df):
+    """
+    Normalize each numeric column in the DataFrame to [-π, π].
+    """
+    df_norm = df.copy()
+    for col in df_norm.columns:
+        col_min = df_norm[col].min()
+        col_max = df_norm[col].max()
+        
+        # Avoid divide-by-zero
+        if col_max == col_min:
+            df_norm[col] = 0.0
+        else:
+            df_norm[col] = -np.pi + ((df_norm[col] - col_min) / (col_max - col_min)) * (2 * np.pi)
+    
+    return df_norm
 
 def normalize_features(df, method="minmax"):
     """
@@ -279,24 +294,49 @@ def normalize_features(df, method="minmax"):
     return df_norm
 
 # TODO make it work for other tickers
-def process_model_data(targets, features, ticker):
-    #just 1 ticker for now
-    X_train, X_test, y_train, y_test= two_qubit_data_tickers([ticker])
+def process_model_data(targets, features, tickers):
+    """
+    Process features and targets so that each row contains all tickers' data for that date.
+    
+    Args:
+        targets (list[str]): target column names
+        features (list[str]): feature column names
+        tickers (list[str]): list of ticker strings
 
-    #drop ticker name
-    X_train.columns = X_train.columns.droplevel("Ticker")
-    y_train.columns = y_train.columns.droplevel("Ticker")
+    Returns:
+        X: np.ndarray, shape (num_samples, num_features * num_tickers)
+        y: tf.Tensor, shape (num_samples, num_targets * num_tickers)
+    """
+    X_list = []
+    y_list = []
 
-    X = X_train.reset_index()
-    y = y_train.reset_index()
+    # Load all tickers data first
+    data_dict = {}
+    for ticker in tickers:
+        X_train, X_test, y_train, y_test = two_qubit_data_tickers([ticker])
+        X_train.columns = X_train.columns.droplevel("Ticker")
+        y_train.columns = y_train.columns.droplevel("Ticker")
 
-    X = X[features]
-    y = y[targets]
+        # Reset index to align dates
+        data_dict[ticker] = pd.concat([X_train, y_train], axis=1).reset_index(drop=True)
+    
+    # Ensure all tickers have same number of rows
+    min_len = min([len(df) for df in data_dict.values()])
 
-    # TODO normalise all data together
-    X = normalize_features(X, method="minmax")
+    # For each date, concatenate all tickers horizontally
+    for i in range(min_len):
+        row_features = []
+        row_targets = []
+        for ticker in tickers:
+            df = data_dict[ticker]
+            row_features.append(df.loc[i, features].values)
+            row_targets.append(df.loc[i, targets].values)
+        X_list.append(np.concatenate(row_features))
+        y_list.append(np.concatenate(row_targets))
 
-    X = X.to_numpy().astype(float).tolist()
-    X= np.array(X)
-    y = tf.convert_to_tensor(y.values, dtype=tf.float32)
-    return X,y
+    # Convert to arrays / tensors
+    X_np = np.array(X_list, dtype=float)
+    y_tf = tf.convert_to_tensor(np.array(y_list, dtype=float), dtype=tf.float32)
+
+    print(X_np.shape, y_tf.shape)
+    return X_np, y_tf
