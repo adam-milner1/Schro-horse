@@ -273,7 +273,7 @@ def two_qubit_circuit_tickers(tickers):
     data_points = 8
     group_sizes = num_stocks * [2]
     qc.compose(data_loading_layer(data_points, tickers), inplace=True)
-    qc.compose(big_su2_circuit(total_qubits, reps=1), inplace=True)
+    qc.compose(big_su2_circuit(total_qubits, reps=2), inplace=True)
     #qc.compose(custom_parameterized_circuit(data_points, tickers,
     #                                       rotations=['rx', 'ry', 'rz'],
     #                                       inter_gate='cz',
