@@ -2,7 +2,7 @@
 # model2.py
 # =========================
 # Pure local QGAN with Qiskit + TensorFlow
-# Generator is a Qiskit circuit optimized with COBYLA
+# Generator is a Qiskit circuit optimized with QNG
 # Discriminator is a classical Keras network
 # =========================
 
@@ -15,7 +15,6 @@ print(tf.__version__)  # should print something like 2.14.x
 print("GPU devices:", tf.config.list_physical_devices("GPU"))
 
 from tensorflow.keras import layers, models, metrics
-from scipy.optimize import minimize
 
 # Qiskit imports
 from qiskit import QuantumCircuit, transpile
@@ -26,7 +25,7 @@ from qiskit_aer.backends import AerSimulator
 
 # Use Aer simulator for local estimation
 from qiskit_aer.primitives import EstimatorV2 as BackendEstimator
-
+import pennylane as qml  # For QNG optimizer
 
 # ==========================
 # QGenerator (local)
@@ -113,39 +112,16 @@ class QGenerator:
         return bind
     
     def optimise_circuit_best(self, qc: QuantumCircuit, backend=None, trials: int = 5):
-        """
-        Transpile the quantum circuit multiple times and pick the one with the lowest 2-qubit depth.
-        
-        Parameters:
-            qc : QuantumCircuit
-                The quantum circuit to optimize.
-            backend : Optional[BaseBackend]
-                The backend to transpile for (None uses default simulator).
-            trials : int
-                Number of transpilation trials.
-        
-        Returns:
-            best_qc : QuantumCircuit
-                Transpiled circuit with lowest 2-qubit gate depth.
-            best_2q_depth : int
-                Depth of 2-qubit gates of the best circuit.
-        """
         best_qc = None
         best_2q_depth = float('inf')
 
         for _ in range(trials):
             transpiled = transpile(qc, backend=self.backend, optimization_level=3)
-
-            # Filter 2-qubit gates using a lambda
             two_qubit_gates = list(filter(lambda inst: inst[0].num_qubits == 2, transpiled.data))
-            
-            # Create a temporary circuit with only 2-qubit gates to compute depth
             temp_qc = QuantumCircuit(transpiled.num_qubits)
             for inst, qargs, cargs in two_qubit_gates:
                 temp_qc.append(inst, qargs, cargs)
-            
             two_q_depth = temp_qc.depth()
-
             print(f"Trial 2Q Depth: {two_q_depth}")
             if two_q_depth < best_2q_depth:
                 best_2q_depth = two_q_depth
@@ -165,20 +141,11 @@ class QGenerator:
     def run_batch(self, data_batch: np.ndarray, weight_batch: np.ndarray) -> np.ndarray:
         if data_batch.shape[0] != weight_batch.shape[0]:
             raise ValueError("Mismatched batch sizes")
-
-        # Vectorized parameter concatenation
         batched_params = np.hstack([data_batch, weight_batch])
-
-        # Build pubs
         pubs = [(self.qiskit_circuit, self._z_ops, batched_params[i]) for i in range(data_batch.shape[0])]
-
-        # Run estimator once
         result = self.estimator.run(pubs).result()
-
-        # Convert to array
         results = np.array([res.data.evs for res in result], dtype=np.float32)
-        return results*np.pi
-
+        return results
 
     def __call__(self, data_batch, weights_batch):
         data_np = np.asarray(data_batch, dtype=np.float32)
@@ -205,11 +172,11 @@ def make_discriminator(input_size, use_bias=True, multiplier=1):
 
 
 # ==========================
-# GAN with COBYLA generator
+# GAN with QNG generator
 # ==========================
 class GAN(models.Model):
     """
-    WGAN-GP where the generator is a Qiskit circuit optimized with COBYLA,
+    WGAN-GP where the generator is a Qiskit circuit optimized with QNG,
     and the discriminator is a classical Keras network trained with Adam.
     """
 
@@ -299,7 +266,7 @@ class GAN(models.Model):
         gp = tf.reduce_mean((norm - 1.0) ** 2)
         return gp
 
-    # ---------- COBYLA objective ----------
+    # ---------- Generator objectives ----------
     def _g_objective_numpy(self, w_vec: np.ndarray, feature_batch_np: np.ndarray) -> float:
         B = feature_batch_np.shape[0]
         w_tiled = np.tile(w_vec[None, :], (B, 1))
@@ -309,28 +276,15 @@ class GAN(models.Model):
         return float(-np.mean(d_scores))
     
     def _g_objective_tf(self, w_vec: np.ndarray, feature_batch_np: np.ndarray) -> float:
-
-        # Convert input to TF tensor once
         feature_batch = tf.convert_to_tensor(feature_batch_np, dtype=tf.float32)
         w_vec_tf = tf.convert_to_tensor(w_vec[None, :], dtype=tf.float32)
         B = tf.shape(feature_batch)[0]
-
-        # Tile latent vector
         w_tiled = tf.tile(w_vec_tf, [B, 1])
-
-        # Forward pass through generator
         gen_out = self.generator(feature_batch, w_tiled)
-
-        # Concatenate features and generated output
         d_inp = tf.concat([feature_batch, gen_out], axis=-1)
-
-        # Forward pass through discriminator
         d_scores = self.discriminator(d_inp, training=False)
         d_scores = tf.reshape(d_scores, [-1])
-
-        # Compute negative mean (to maximize discriminator score)
-        return float(-tf.reduce_mean(d_scores).numpy())  # Only convert the scalar to float
-
+        return float(-tf.reduce_mean(d_scores).numpy())
 
     # ---------- Single training step ----------
     def train_step(self, data):
@@ -339,7 +293,7 @@ class GAN(models.Model):
         self.batch_size = B
 
         feature_data = tf.convert_to_tensor(feature_data, dtype=tf.float32)
-        real_data    = tf.convert_to_tensor(real_data, dtype=tf.float32)  # cast eager tensor
+        real_data    = tf.convert_to_tensor(real_data, dtype=tf.float32)
         real_concat  = tf.concat([feature_data, real_data], axis=-1)
 
         # Train discriminator
@@ -357,20 +311,16 @@ class GAN(models.Model):
             d_grads = tape.gradient(d_loss, self.discriminator.trainable_variables)
             self.d_optimizer.apply_gradients(zip(d_grads, self.discriminator.trainable_variables))
 
-        # COBYLA generator optimization
+        # QNG optimizer for generator
         feat_np = feature_data.numpy().astype(np.float32)
         w0 = np.array([w.numpy() for w in self.generator_weights], dtype=np.float32)
 
-        def objective(w_vec):
-            return self._g_objective_tf(w_vec, feat_np)
+        qng_opt = qml.QNGOptimizer(stepsize=0.1)
+        max_iter = 5
+        w_opt = w0.copy()
+        for _ in range(max_iter):
+            w_opt, _ = qng_opt.step(lambda w: self._g_objective_tf(w, feat_np), w_opt)
 
-        res = minimize(
-            fun=objective,
-            x0=w0,
-            method="COBYLA",
-            options={"maxiter": 50, "rhobeg": 0.1, "tol": 1e-3},
-        )
-        w_opt = res.x.astype(np.float32)
         for i, val in enumerate(w_opt):
             self.generator_weights[i].assign(val)
 
@@ -394,6 +344,7 @@ class GAN(models.Model):
         self.g_loss_metric.update_state(g_loss)
 
         return {m.name: m.result() for m in self.metrics}
+    
 
     # ---------- Fit ----------
     def fit(self, feature_data, real_data, epochs, batch_size, callbacks=None, verbose=True):

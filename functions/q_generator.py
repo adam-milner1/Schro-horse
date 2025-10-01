@@ -279,7 +279,7 @@ def two_qubit_circuit_tickers(tickers):
     #                                       inter_gate='cz',
     #                                       intra_gate='cz', reps=1), inplace=True)
     # Assign qubit indices per ticker
-    qc.measure_all()
+    #qc.measure_all()
     
     return qc
             
