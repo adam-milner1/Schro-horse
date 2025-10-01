@@ -48,7 +48,7 @@ def data_loading_layer(num_data_points, tickers):
         # Rename parameters sequentially
         param_map = {}
         for old_param in su2_block.parameters:
-            param_map[old_param] = Parameter(f"x{global_param_idx}")
+            param_map[old_param] = Parameter(f"A{num_to_alpha3(global_param_idx)}")
             global_param_idx += 1
 
         su2_block = su2_block.assign_parameters(param_map, inplace=False)
@@ -58,7 +58,16 @@ def data_loading_layer(num_data_points, tickers):
 
     return qc
 
+def num_to_alpha3(n: int) -> str:
+    """Convert an integer to a 3-letter base-26 string using A-Z."""
+    if n < 0 or n >= 26**3:
+        raise ValueError("Number must be between 0 and 17575 (inclusive) for 3 alphabet digits")
 
+    a = n // (26 * 26)
+    b = (n // 26) % 26
+    c = n % 26
+
+    return chr(65 + a) + chr(65 + b) + chr(65 + c)
 
 
 def custom_parameterized_circuit(num_data_points, tickers,
@@ -155,7 +164,7 @@ def big_su2_circuit(total_qubits, reps=1, entanglement='linear'):
     )
 
     # Rename parameters sequentially as W0, W1, ...
-    param_map = {old: Parameter(f"W{i}") for i, old in enumerate(su2_block.parameters)}
+    param_map = {old: Parameter(f"W{num_to_alpha3(i)}") for i, old in enumerate(su2_block.parameters)}
     su2_block = su2_block.assign_parameters(param_map, inplace=False)
 
     # Append the SU2 to the main circuit

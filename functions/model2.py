@@ -71,15 +71,15 @@ class QGenerator:
         Basic heuristic: names starting with x/data -> data params,
         names starting with w/theta/th -> trainable params.
         """
-        data_prefixes = ("x", "data")
-        weight_prefixes = ("w", "theta", "th")
+        data_prefixe = "A"
+        weight_prefixe = "W"
         data_params, weight_params, other = [], [], []
 
         for p in circuit.parameters:
-            name = p.name.lower()
-            if name.startswith(data_prefixes):
+            name = p.name
+            if name[0] == data_prefixe:
                 data_params.append(p)
-            elif name.startswith(weight_prefixes):
+            elif name[0] == weight_prefixe:
                 weight_params.append(p)
             else:
                 other.append(p)

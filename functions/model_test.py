@@ -3,13 +3,17 @@ import json
 from functions.data_preperation import process_model_data
 from functions.q_generator import two_qubit_circuit_tickers
 from sklearn.metrics import mean_squared_error
-from qiskit_ibm_runtime import QiskitRuntimeService, EstimatorV2
-from qiskit.providers.fake_provider import GenericBackendV2
+from qiskit_ibm_runtime import QiskitRuntimeService#, EstimatorV2
+#from qiskit.providers.fake_provider import GenericBackendV2
+from qiskit_aer.backends import AerSimulator as GenericBackendV2
 from qiskit import transpile
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 from qiskit.quantum_info import SparsePauliOp
+
+# Use Aer simulator for local estimation
+from qiskit_aer.primitives import EstimatorV2
 
 def get_latest_model_path(model_dir):
     files = os.listdir(model_dir)
@@ -93,41 +97,48 @@ def infer_parameter_groups(circuit):
         return data_params, weight_params
 
 def generate_data(generator_weights, qc, feature_data, target_data, backend=None, sampling=True, sample_size=100):
-        # Optional sampling
-        if sampling:
-            n_samples = feature_data.shape[0]
-            indices = np.random.choice(n_samples, size=sample_size, replace=False)
-            feature_data = feature_data[indices]
-            target_data = np.array(target_data)[indices]
+    # --- Sampling subset if required ---
+    if sampling:
+        n_samples = feature_data.shape[0]
+        indices = np.random.choice(n_samples, size=sample_size, replace=False)
 
-        # Assign generator weights once
-        data_params, weight_params = infer_parameter_groups(qc)
-        weight_param_dict = {param: val for param, val in zip(weight_params, generator_weights)}
-        qc_weighted = qc.assign_parameters(weight_param_dict)
+        feature_data = feature_data[indices]
+        target_data = np.array(target_data)[indices]
+    else:
+        target_data = np.array(target_data)
 
-        # Observables
-        num_qubits = qc_weighted.num_qubits
-        observables = [SparsePauliOp.from_list([(f"{'I'*i}Z{'I'*(num_qubits-i-1)}", 1)]) 
-                    for i in range(num_qubits)]
+    # --- Assign generator weights to the circuit ---
+    data_params, weight_params = infer_parameter_groups(qc)
+    weight_param_dict = {param: val for param, val in zip(weight_params, generator_weights)}
+    #qc_weighted = qc.assign_parameters(weight_param_dict)
 
-        # Transpile once
-        backend = backend if backend else GenericBackendV2(num_qubits=num_qubits)
-        qc_weighted_transpiled = transpile(qc_weighted, backend=backend, optimization_level=3)
+    # --- Build Z observables ---
+    num_qubits = qc.num_qubits
+    observables = [SparsePauliOp.from_list([(f"{'I'*i}Z{'I'*(num_qubits-i-1)}", 1)]) for i in range(num_qubits)]
 
-        # Build batch of parameter dictionaries
-        batched_params = [dict(zip(data_params, row)) for row in feature_data]
+    # --- Backend and Estimator ---
+    backend = backend if backend else GenericBackendV2()#(num_qubits=num_qubits)
+    estimator = EstimatorV2()#(mode=backend)
+    
 
-        # Build primitive inputs for the estimator
-        pubs = [(qc_weighted_transpiled, observables, param_dict) for param_dict in batched_params]
+    # --- Transpile circuit ---
+    qc_weighted_transpiled = transpile(qc, backend=backend, optimization_level=3)
 
-        # Run estimator once on the whole batch
-        result = EstimatorV2(mode=backend).run(pubs).result()
+    # --- Prepare batched parameters ---
+    n_samples = feature_data.shape[0]
+    batched_params = np.hstack([feature_data, np.tile(generator_weights, (n_samples, 1))])
 
-        # Extract expectation values
-        outputs = np.array([res.data.evs for res in result], dtype=np.float32) * np.pi
-        target_data_np = np.array(target_data)
+    # --- Build pubs for batch execution ---
+    pubs = [(qc_weighted_transpiled, observables, batched_params[i]) for i in range(n_samples)]
 
-        return outputs, target_data_np
+    # --- Run the estimator once ---
+    result = estimator.run(pubs).result()
+
+    # --- Collect expectation values ---
+    outputs = np.array([res.data.evs for res in result], dtype=np.float32) * np.pi
+
+    return outputs, target_data
+
 
 
 def calculate_rmse(generated_data, target_data, ticker_labels, target_labels):
@@ -229,5 +240,7 @@ def compare_tickers_scatter(df, ticker1, ticker2,title, feature="OC_next"):
     plt.xlabel(f"{ticker1} {feature}")
     plt.ylabel(f"{ticker2} {feature}")
     plt.title(title)
+    plt.xlim(-np.pi, np.pi)
+    plt.ylim(-np.pi, np.pi)
     plt.grid(True)
     plt.show()
