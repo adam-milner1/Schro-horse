@@ -44,6 +44,12 @@ def plot_training_metrics(save_dir, generator_loss_scaling =1):
             metrics = json.load(f)
         for key, value in metrics.items():
             all_metrics.setdefault(key, []).append(value)
+    
+    # Fix ordering
+    sorted_indices = np.argsort(epochs)
+    epochs = [epochs[i] for i in sorted_indices]
+    for k in all_metrics:
+        all_metrics[k] = [all_metrics[k][i] for i in sorted_indices]
 
     # Plot each metric
     plt.figure(figsize=(10, 6))
@@ -86,21 +92,16 @@ def infer_parameter_groups(circuit):
         weight_params += other
         return data_params, weight_params
 
+def generate_data(generator_weights, qc, feature_data, target_data, backend=None, sampling=True, sample_size = 100):
 
-def calculate_rmse(generator_weights, targets, tickers, features, sample_size = 100):
-    # Load QGenerator circuit
-    qc= two_qubit_circuit_tickers(tickers)
+    if sampling:
+        n_samples = feature_data.shape[0]
+        indices = np.random.choice(n_samples, size=sample_size, replace=False)
 
-    # Load data
-    feature_data, target_data = process_model_data(targets, features, tickers)
-
-    n_samples = feature_data.shape[0]
-    indices = np.random.choice(n_samples, size=sample_size, replace=False)
-
-    # Select the rows
-    target_data= np.array(target_data)
-    feature_data = feature_data[indices]
-    target_data = target_data[indices]
+        # Select the rows
+        target_data= np.array(target_data)
+        feature_data = feature_data[indices]
+        target_data = target_data[indices]
 
     # Assign weights to the circuit
     data_params, weight_params = infer_parameter_groups(qc)
@@ -111,9 +112,7 @@ def calculate_rmse(generator_weights, targets, tickers, features, sample_size = 
     num_qubits = qc_weighted.num_qubits
     observables = [SparsePauliOp.from_list([(f"{'I'*i}Z{'I'*(num_qubits-i-1)}", 1)]) for i in range(num_qubits)]
 
-    #service = QiskitRuntimeService()
-    #backend = service.least_busy()
-    backend = GenericBackendV2(num_qubits=num_qubits)
+    backend = backend if backend else GenericBackendV2(num_qubits=num_qubits)
     estimator = EstimatorV2(mode=backend)
 
     # Transpile circuit for backend
@@ -138,32 +137,38 @@ def calculate_rmse(generator_weights, targets, tickers, features, sample_size = 
     outputs = np.array(outputs)          # shape: (n_samples, n_features)
     target_data_np = np.array(target_data)  
 
+    return outputs, target_data_np
+
+def calculate_rmse(generated_data, target_data, ticker_labels, target_labels):
     # Calculate RMSE for each ticker and output feature
     rmse_per_feature = []
-    for i in range(outputs.shape[1]):
-        rmse_i = np.sqrt(mean_squared_error(target_data_np[:, i], outputs[:, i]))
+    for i in range(generated_data.shape[1]):
+        rmse_i = np.sqrt(mean_squared_error(target_data[:, i], generated_data[:, i]))
         rmse_per_feature.append(rmse_i)
 
-    feature_labels = [f"{ticker}_{target}" for ticker in tickers for target in targets]
+    feature_labels = [f"{ticker}_{target}" for ticker in ticker_labels for target in target_labels]
     rmse_dict = {label: rmse for label, rmse in zip(feature_labels, rmse_per_feature)}
-    for k, v in rmse_dict.items():
-        print(f"{k}: {v:.4f}")
     
     return rmse_dict
 
 
 #plot rmse per epoch to see if its going down
-def plot_rmse_per_epoch(model_path, targets, tickers, features, sample_size=100):
-    weights_files = sorted([f for f in os.listdir(f"{model_path}/logs") if f.startswith("generator_weights") and f.endswith(".npy")])
+def plot_rmse_per_epoch(model_path, qc, feature_data, target_data, target_labels, ticker_labels, every_n_epochs=1, backend= None, sampling=True, sample_size=100):
+    weights_files = sorted(
+        [f for f in os.listdir(f"{model_path}/logs") if f.startswith("generator_weights") and f.endswith(".npy")],
+        key=lambda x: int(x.split("epoch")[1].split(".")[0])
+    )
+    
     epochs=[]
     weights_list=[]
 
     for file in weights_files:
         epoch_num = int(file.split("epoch")[1].split(".")[0])
-        epochs.append(epoch_num)
-        path = os.path.join(f"{model_path}/logs", file)
-        weights = np.load(path)
-        weights_list.append(weights)
+        if epoch_num % every_n_epochs == 0:
+            epochs.append(epoch_num)
+            path = os.path.join(f"{model_path}/logs", file)
+            weights = np.load(path)
+            weights_list.append(weights)
     
     weights_dict= {
         "weights": weights_list,
@@ -173,7 +178,23 @@ def plot_rmse_per_epoch(model_path, targets, tickers, features, sample_size=100)
     all_rmse = []  # list of dicts
 
     for loaded_weights in weights_dict["weights"]:
-        rmse_dict = calculate_rmse(loaded_weights, targets, tickers, features, sample_size)
+        outputs, target_outputs = generate_data(
+            generator_weights = loaded_weights,
+            qc = qc,
+            feature_data = feature_data,
+            target_data = target_data,
+            backend = backend,
+            sampling = sampling,
+            sample_size = sample_size,
+        )
+
+        rmse_dict = calculate_rmse(
+            generated_data= outputs,
+            target_data= target_outputs, 
+            ticker_labels= ticker_labels,
+            target_labels = target_labels
+        )
+
         all_rmse.append(rmse_dict)
 
     rmse_over_epochs = {key: [] for key in all_rmse[0].keys()}
@@ -194,3 +215,28 @@ def plot_rmse_per_epoch(model_path, targets, tickers, features, sample_size=100)
     plt.legend()
     plt.show()
     return rmse_over_epochs
+
+def compare_tickers_scatter(df, ticker1, ticker2,title, feature="OC_next"):
+    """
+    Make a scatter plot comparing the chosen feature (OC_next or CO_next)
+    between two tickers using a wide-format DataFrame.
+    
+    Parameters:
+        df (pd.DataFrame): Wide-format DataFrame with columns like 'GOOG_OC_next'
+        ticker1 (str): First ticker symbol
+        ticker2 (str): Second ticker symbol
+        feature (str): Feature to compare ('OC_next' or 'CO_next')
+    """
+    col1 = f"{ticker1}_{feature}"
+    col2 = f"{ticker2}_{feature}"
+    
+    if col1 not in df.columns or col2 not in df.columns:
+        raise ValueError(f"Columns {col1} or {col2} not found in DataFrame")
+    
+    plt.figure(figsize=(6,6))
+    plt.scatter(df[col1], df[col2], alpha=0.7)
+    plt.xlabel(f"{ticker1} {feature}")
+    plt.ylabel(f"{ticker2} {feature}")
+    plt.title(title)
+    plt.grid(True)
+    plt.show()
