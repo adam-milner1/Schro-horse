@@ -163,6 +163,8 @@ def big_su2_circuit(total_qubits, reps=1, entanglement='linear'):
 
     return qc
 
+
+
 def observables(num_qubits):
     """
     Constructs a measurement circuit for given observables.

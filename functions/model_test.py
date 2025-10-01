@@ -92,52 +92,43 @@ def infer_parameter_groups(circuit):
         weight_params += other
         return data_params, weight_params
 
-def generate_data(generator_weights, qc, feature_data, target_data, backend=None, sampling=True, sample_size = 100):
+def generate_data(generator_weights, qc, feature_data, target_data, backend=None, sampling=True, sample_size=100):
+        # Optional sampling
+        if sampling:
+            n_samples = feature_data.shape[0]
+            indices = np.random.choice(n_samples, size=sample_size, replace=False)
+            feature_data = feature_data[indices]
+            target_data = np.array(target_data)[indices]
 
-    if sampling:
-        n_samples = feature_data.shape[0]
-        indices = np.random.choice(n_samples, size=sample_size, replace=False)
+        # Assign generator weights once
+        data_params, weight_params = infer_parameter_groups(qc)
+        weight_param_dict = {param: val for param, val in zip(weight_params, generator_weights)}
+        qc_weighted = qc.assign_parameters(weight_param_dict)
 
-        # Select the rows
-        target_data= np.array(target_data)
-        feature_data = feature_data[indices]
-        target_data = target_data[indices]
+        # Observables
+        num_qubits = qc_weighted.num_qubits
+        observables = [SparsePauliOp.from_list([(f"{'I'*i}Z{'I'*(num_qubits-i-1)}", 1)]) 
+                    for i in range(num_qubits)]
 
-    # Assign weights to the circuit
-    data_params, weight_params = infer_parameter_groups(qc)
-    weight_param_dict = {param: val for param, val in zip(weight_params, generator_weights)}
-    qc_weighted = qc.assign_parameters(weight_param_dict)
+        # Transpile once
+        backend = backend if backend else GenericBackendV2(num_qubits=num_qubits)
+        qc_weighted_transpiled = transpile(qc_weighted, backend=backend, optimization_level=3)
 
-    # Get observables
-    num_qubits = qc_weighted.num_qubits
-    observables = [SparsePauliOp.from_list([(f"{'I'*i}Z{'I'*(num_qubits-i-1)}", 1)]) for i in range(num_qubits)]
+        # Build batch of parameter dictionaries
+        batched_params = [dict(zip(data_params, row)) for row in feature_data]
 
-    backend = backend if backend else GenericBackendV2(num_qubits=num_qubits)
-    estimator = EstimatorV2(mode=backend)
+        # Build primitive inputs for the estimator
+        pubs = [(qc_weighted_transpiled, observables, param_dict) for param_dict in batched_params]
 
-    # Transpile circuit for backend
-    qc_weighted_transpiled = transpile(qc_weighted, backend=backend, optimization_level=3)
+        # Run estimator once on the whole batch
+        result = EstimatorV2(mode=backend).run(pubs).result()
 
-    # Run the inputs through the circuit
-    #change this to batch?
-    outputs =[]
-    for input_data in tqdm(feature_data, desc="Processing inputs"):
-        data_param_dict = {param: val for param, val in zip(data_params, input_data)}
-        
-        # Assign data encodings to the circuit
-        qc_data = qc_weighted_transpiled .assign_parameters(data_param_dict) 
+        # Extract expectation values
+        outputs = np.array([res.data.evs for res in result], dtype=np.float32) * np.pi
+        target_data_np = np.array(target_data)
 
-        pub = (qc_data, observables) #primitive unified bloc program input for estimator
-        job = estimator.run([pub])
-        result = job.result()[0]
-        
-        expectation_values = result.data.evs
-        outputs.append(expectation_values)
+        return outputs, target_data_np
 
-    outputs = np.array(outputs)          # shape: (n_samples, n_features)
-    target_data_np = np.array(target_data)  
-
-    return outputs, target_data_np
 
 def calculate_rmse(generated_data, target_data, ticker_labels, target_labels):
     # Calculate RMSE for each ticker and output feature
