@@ -8,6 +8,7 @@ from qiskit.circuit.library import EfficientSU2
 from qiskit.primitives import BaseEstimatorV2
 from qiskit import transpile
 
+
 from qiskit.quantum_info.operators.base_operator import BaseOperator
 
 import numpy as np
@@ -70,25 +71,19 @@ def num_to_alpha3(n: int) -> str:
     return chr(65 + a) + chr(65 + b) + chr(65 + c)
 
 
-def custom_parameterized_circuit(num_data_points, tickers,
-                                 rotations=['rx','ry','rz'],
-                                 inter_gate='cz', intra_gate='cz', reps=2):
-
+def custom_parameterized_circuit(group_sizes, tickers, reps=2, entanglement_maps=None):
+    if entanglement_maps is None:
+        entanglement_maps = 'circular'
     num_stocks = len(tickers)
 
-    # Determine qubits per ticker
-    if num_data_points <= 2:
-        group_sizes = num_stocks * [1]
-    else:
-        group_size = int(np.ceil(num_data_points / 4))
-        group_sizes = num_stocks * [group_size]
+    block_maps = []
+    for entanglement_map in entanglement_maps:
+        block_maps.append([])
+        for entangly in entanglement_map:
+            block_maps[-1].append([tickers.index(entangly[0]),tickers.index(entangly[1])])
 
     total_qubits = sum(group_sizes)
     qc = QuantumCircuit(total_qubits)
-
-    # Total weight parameters: num_qubits * len(rotations) * reps * 2
-    num_rotations = total_qubits * len(rotations) * reps * 2
-    weights = ParameterVector("w", num_rotations)  # Named as weights explicitly
 
     # Assign qubit indices per ticker
     start = 0
@@ -97,44 +92,47 @@ def custom_parameterized_circuit(num_data_points, tickers,
         block_indices.append(list(range(start, start+size)))
         start += size
 
-    # Helper
-    weight_counter = 0
-    def apply_rotations(qc, qubit_idx):
-        nonlocal weight_counter
-        for rot in rotations:
-            theta = weights[weight_counter]
-            weight_counter += 1
-            if rot.lower() == 'rx':
-                qc.rx(theta, qubit_idx)
-            elif rot.lower() == 'ry':
-                qc.ry(theta, qubit_idx)
-            elif rot.lower() == 'rz':
-                qc.rz(theta, qubit_idx)
+    theta = ParameterVector("theta0",3*group_sizes[0])
 
-    # Repeat layers
-    for rep in range(reps):
-        for qubits in block_indices:
-            for q in qubits:
-                apply_rotations(qc, q)
-        # inter-block entanglement
-        for i in range(len(block_indices)):
-            q1 = block_indices[i][-1]
-            q2 = block_indices[(i+1) % num_stocks][0]
-            if inter_gate.lower()=='cz':
-                qc.cz(q1,q2)
-            elif inter_gate.lower()=='cx':
-                qc.cx(q1,q2)
-        # intra-block entanglement + second rotations
-        for qubits in block_indices:
-            if len(qubits)>1:
-                for i in range(len(qubits)-1):
-                    q1, q2 = qubits[i], qubits[i+1]
-                    if intra_gate.lower()=='cz':
-                        qc.cz(q1,q2)
-                    elif intra_gate.lower()=='cx':
-                        qc.cx(q1,q2)
-                for q in qubits:
-                    apply_rotations(qc, q)
+    for i in range(group_sizes[0]):
+        for t in range(len(tickers)):
+            qc.rx(theta[0+i*3],block_indices[t][i])
+            qc.ry(theta[1+i*3],block_indices[t][i])
+            qc.rz(theta[2+i*3],block_indices[t][i])
+
+    i = 0
+    #entanglement only for intra ticker
+    for ticker, size in zip(tickers, group_sizes):
+        qubits = block_indices[i]
+        i=i+1
+        entangle_qc = QuantumCircuit(len(qubits))
+        qmap= [(j, j+1) for j in range(len(qubits)-1)]
+        if size>2:
+            qmap.append([(len(qubits)-1, 0)])
+        for a,b in qmap:
+            entangle_qc.cz(a,b)
+        qc.compose(entangle_qc, qubits,inplace=True)
+
+    theta1 = ParameterVector("theta1",2*total_qubits)
+
+    for i in range(total_qubits):
+            qc.ry(theta1[2*i],i)
+            qc.rz(theta1[2*i+1],i)
+    
+        #entanglement only for intra ticker
+    for i,block_map in enumerate(block_maps):
+        qubits = [item[i] for item in block_indices]
+
+        entangle_qc = QuantumCircuit(len(qubits))
+        for a,b in block_map:
+            entangle_qc.cz(a,b)
+        qc.compose(entangle_qc, qubits,inplace=True)
+    
+    theta2 = ParameterVector("theta2",2*total_qubits)
+
+    for i in range(total_qubits):
+            qc.ry(theta2[2*i],i)
+            qc.rz(theta2[2*i+1],i)
 
     return qc
 
@@ -284,7 +282,7 @@ def two_qubit_circuit_tickers(tickers):
     data_points = 8
     group_sizes = num_stocks * [2]
     qc.compose(data_loading_layer(data_points, tickers), inplace=True)
-    qc.compose(big_su2_circuit(total_qubits, reps=2), inplace=True)
+    #qc.compose(big_su2_circuit(total_qubits, reps=2), inplace=True)
     #qc.compose(custom_parameterized_circuit(data_points, tickers,
     #                                       rotations=['rx', 'ry', 'rz'],
     #                                       inter_gate='cz',
