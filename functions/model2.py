@@ -368,7 +368,7 @@ class GAN(models.Model):
             fun=objective,
             x0=w0,
             method="COBYLA",
-            options={"maxiter": 50, "rhobeg": 0.1, "tol": 1e-3},
+            options={"maxiter": 60, "rhobeg": 0.1, "tol": 1e-3},
         )
         w_opt = res.x.astype(np.float32)
         for i, val in enumerate(w_opt):
