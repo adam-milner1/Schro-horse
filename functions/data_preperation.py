@@ -236,7 +236,7 @@ def two_qubit_data_tickers(tickers):
     
     data.sort_index(axis=1, level=0)
     data = remove_na(data)
-    data = normalize_to_pm_pi(data)
+    data =normalize_features(data, method="zscore")
     X_train, X_test, y_train, y_test = split_time_series(data, target_cols=["OC_next", "CO_next"])
 
     
@@ -286,15 +286,19 @@ def normalize_features(df, method="minmax"):
             df_norm[numeric_cols] - df_norm[numeric_cols].min()
         ) / (df_norm[numeric_cols].max() - df_norm[numeric_cols].min())
 
+
     elif method == "zscore":
         df_norm[numeric_cols] = (
             df_norm[numeric_cols] - df_norm[numeric_cols].mean()
         ) / df_norm[numeric_cols].std(ddof=0)
 
+    # Optional: Clip to a chosen number of SDs (e.g., [-3, +3])
+        df_norm[numeric_cols] = df_norm[numeric_cols].clip(-3, 3)
+        df_norm[numeric_cols] = (df_norm[numeric_cols] + 3) / 6
     else:
         raise ValueError("method must be either 'minmax' or 'zscore'")
 
-    return df_norm
+    return -np.pi+df_norm*(2*np.pi)
 
 # TODO make it work for other tickers
 def process_model_data(targets, features, tickers):

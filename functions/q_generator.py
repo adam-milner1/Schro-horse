@@ -7,6 +7,7 @@ from qiskit.quantum_info import SparsePauliOp
 from qiskit.circuit.library import EfficientSU2
 from qiskit.primitives import BaseEstimatorV2
 from qiskit import transpile
+#import stock_corr as sc
 
 
 from qiskit.quantum_info.operators.base_operator import BaseOperator
@@ -51,10 +52,12 @@ def data_loading_layer(num_data_points, tickers):
         for old_param in su2_block.parameters:
             param_map[old_param] = Parameter(f"A{num_to_alpha3(global_param_idx)}")
             global_param_idx += 1
-
+        
         su2_block = su2_block.assign_parameters(param_map, inplace=False)
+        su2_gate = su2_block.to_gate()
+        su2_gate.name = f"EfficientSU2 - {ticker}"
 
-        qc.append(su2_block, qubits)
+        qc.append(su2_gate, qubits)
         start += size
 
     return qc
@@ -129,11 +132,12 @@ def custom_parameterized_circuit(group_sizes, tickers, reps=2, entanglement_maps
         qc.compose(entangle_qc, qubits,inplace=True)
     
     theta2 = ParameterVector("theta2",2*total_qubits)
-
     for i in range(total_qubits):
-            qc.ry(theta2[2*i],i)
-            qc.rz(theta2[2*i+1],i)
-
+        qc.ry(theta2[2*i], i)
+        qc.rz(theta2[2*i+1], i)
+    # Rename all parameters in qc to W{num_to_alpha3(i)}
+    param_map = {old: Parameter(f"W{num_to_alpha3(i)}") for i, old in enumerate(qc.parameters)}
+    qc = qc.assign_parameters(param_map, inplace=False)
     return qc
 
 
@@ -282,7 +286,7 @@ def two_qubit_circuit_tickers(tickers):
     data_points = 8
     group_sizes = num_stocks * [2]
     qc.compose(data_loading_layer(data_points, tickers), inplace=True)
-    #qc.compose(big_su2_circuit(total_qubits, reps=2), inplace=True)
+    qc.compose(big_su2_circuit(total_qubits, reps=2), inplace=True)
     #qc.compose(custom_parameterized_circuit(data_points, tickers,
     #                                       rotations=['rx', 'ry', 'rz'],
     #                                       inter_gate='cz',
@@ -291,4 +295,44 @@ def two_qubit_circuit_tickers(tickers):
     #qc.measure_all()
     
     return qc
-            
+
+def optimise_circuit_best(qc: QuantumCircuit, backend=None, trials: int = 5):
+    """
+    Transpile the quantum circuit multiple times and pick the one with the lowest 2-qubit depth.
+    
+    Parameters:
+        qc : QuantumCircuit
+            The quantum circuit to optimize.
+        backend : Optional[BaseBackend]
+            The backend to transpile for (None uses default simulator).
+        trials : int
+            Number of transpilation trials.
+    
+    Returns:
+        best_qc : QuantumCircuit
+            Transpiled circuit with lowest 2-qubit gate depth.
+        best_2q_depth : int
+            Depth of 2-qubit gates of the best circuit.
+    """
+    best_qc = None
+    best_2q_depth = float('inf')
+
+    for _ in range(trials):
+        transpiled = transpile(qc, backend=backend, optimization_level=3)
+
+        # Filter 2-qubit gates using a lambda
+        two_qubit_gates = list(filter(lambda inst: inst[0].num_qubits == 2, transpiled.data))
+        
+        # Create a temporary circuit with only 2-qubit gates to compute depth
+        temp_qc = QuantumCircuit(transpiled.num_qubits)
+        for inst, qargs, cargs in two_qubit_gates:
+            temp_qc.append(inst, qargs, cargs)
+        
+        two_q_depth = temp_qc.depth()
+
+        print(f"Trial 2Q Depth: {two_q_depth}")
+        if two_q_depth < best_2q_depth:
+            best_2q_depth = two_q_depth
+            best_qc = transpiled
+
+    return best_qc, best_2q_depth
