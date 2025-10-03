@@ -336,3 +336,23 @@ def optimise_circuit_best(qc: QuantumCircuit, backend=None, trials: int = 5):
             best_qc = transpiled
 
     return best_qc, best_2q_depth
+
+def four_qubit_circuit_tickers(tickers):
+    """
+    Creates a quantum circuit with 2 qubits per ticker.
+    """
+    num_stocks = len(tickers)
+    total_qubits = num_stocks * 4
+    qc = QuantumCircuit(total_qubits)
+    data_points = 16
+    group_sizes = num_stocks * [4]
+    qc.compose(data_loading_layer(data_points, tickers), inplace=True)
+    qc.compose(big_su2_circuit(total_qubits, reps=2), inplace=True)
+    #qc.compose(custom_parameterized_circuit(data_points, tickers,
+    #                                       rotations=['rx', 'ry', 'rz'],
+    #                                       inter_gate='cz',
+    #                                       intra_gate='cz', reps=1), inplace=True)
+    # Assign qubit indices per ticker
+    #qc.measure_all()
+    
+    return qc

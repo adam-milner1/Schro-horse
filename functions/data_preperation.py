@@ -222,6 +222,35 @@ def split_time_series(
 
     return X_train, X_test, y_train, y_test
 
+def four_qubit_data_tickers(tickers):
+    data = download_stock_data(tickers)
+    for t in tickers:
+        data = add_macd(data, t)
+
+
+        data = add_OC_CO_next_changes(data, t)
+
+        data = add_ema(data, t, 20)
+
+        data = add_ema(data, t, 50)
+        data = add_sma(data, t, 30)
+        data = add_rsi(data, t, 14)
+        data = add_atr(data, t, 14)
+
+    data["prev_High"] = data["High"].shift(1)
+    data["prev_Low"] = data["Low"].shift(1)
+    data["prev_Close"] = data["Close"].shift(1)
+    data["prev_Open"] = data["Open"].shift(1)
+
+
+    
+    data.sort_index(axis=1, level=0)
+    data = remove_na(data)
+    data =normalize_features(data, method="zscore")
+    X_train, X_test, y_train, y_test = split_time_series(data, target_cols=["OC_next", "CO_next","High","Low"])
+
+    
+    return X_train, X_test, y_train, y_test
 
 def two_qubit_data_tickers(tickers):
     data = download_stock_data(tickers)
@@ -372,3 +401,50 @@ def plot_tickers_pct_change_corr(data: pd.DataFrame, tickers: list, title="Ticke
     sns.heatmap(corr, annot=True, fmt=".2f", cmap='coolwarm', square=True)
     plt.title(title)
     plt.show()
+
+def process_model_data_four(targets, features, tickers):
+    """
+    Process features and targets so that each row contains all tickers' data for that date.
+    
+    Args:
+        targets (list[str]): target column names
+        features (list[str]): feature column names
+        tickers (list[str]): list of ticker strings
+
+    Returns:
+        X: np.ndarray, shape (num_samples, num_features * num_tickers)
+        y: tf.Tensor, shape (num_samples, num_targets * num_tickers)
+    """
+    X_list = []
+    y_list = []
+
+    # Load all tickers data first
+    data_dict = {}
+    for ticker in tickers:
+        X_train, X_test, y_train, y_test = four_qubit_data_tickers([ticker])
+        X_train.columns = X_train.columns.droplevel("Ticker")
+        y_train.columns = y_train.columns.droplevel("Ticker")
+
+        # Reset index to align dates
+        data_dict[ticker] = pd.concat([X_train, y_train], axis=1).reset_index(drop=True)
+    
+    # Ensure all tickers have same number of rows
+    min_len = min([len(df) for df in data_dict.values()])
+
+    # For each date, concatenate all tickers horizontally
+    for i in range(min_len):
+        row_features = []
+        row_targets = []
+        for ticker in tickers:
+            df = data_dict[ticker]
+            row_features.append(df.loc[i, features].values)
+            row_targets.append(df.loc[i, targets].values)
+        X_list.append(np.concatenate(row_features))
+        y_list.append(np.concatenate(row_targets))
+
+    # Convert to arrays / tensors
+    X_np = np.array(X_list, dtype=float)
+    y_tf = tf.convert_to_tensor(np.array(y_list, dtype=float), dtype=tf.float32)
+
+    print(X_np.shape, y_tf.shape)
+    return X_np, y_tf
